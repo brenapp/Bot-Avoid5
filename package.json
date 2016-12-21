@@ -22,6 +22,7 @@
   },
   "homepage": "https://github.com/MayorMonty/Bot-Avoid5#readme",
   "dependencies": {
+    "colors": "^1.1.2",
     "snoostorm": "^0.0.3",
     "snoowrap": "^1.11.3",
     "wordpos": "^1.1.0"
