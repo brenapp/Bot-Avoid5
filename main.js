@@ -3,7 +3,8 @@ var State       = require("./lib/state"),
     snoowrap    = require("snoowrap"),
     snoostorm   = require("snoostorm"),
     colors      = require("colors"),
-    fs          = require("fs");
+    fs          = require("fs"),
+    wordpos     = new (require("wordpos"));
 
 
 let marked = fs.createWriteStream("marked.csv", {flags: "a"});
@@ -39,6 +40,36 @@ function findIllegalSections(text) {
 }
 
 
+/**
+ * createResponse - Creates a response based on the illegal sections of a post
+ * @param  {string[]} illegalSections An Array of Strings Containing the illegal sections
+ * @return {Promise}                  A Promise which resolves with the response in a string
+ */
+function createResponse(illegalSections) {
+
+  // Problem: we have an array of illegal sections, with an unknown number of illegal words, and we need to lookup synonyms for each one of these words
+  // Solution: Turn each illegal section into an array of promises that look up the illegal words and put it into one giant Promise.all
+  // When this resolves, it wil look something like this:
+  //   [
+  //     [{definition}, {definition}, {definition}] // <= Illegal Section #0
+  //     [{definition}, {definition}] // <= Illegal Section #1
+  //     [{definition}, {definition}, {definition}, {definition}, {definition}] // <= Illegal Section #2
+  //     [{definition}, {definition}, {definition}, {definition}, {definition}, {definition}] // <= Illegal Section #3
+  //   ]
+  return Promise.all(
+    illegalSections.map(section =>
+      Promise.all(
+        // Note: Here I'm assuming that words are split by spaces; it would be better for me to tokenize this, then look it up, but this will do a good enough job
+        section.split(" ").filter(word => word.indexOf("e") > -1).map(word => wordpos.lookup(word))
+      )
+    )
+  ).then(function(response) {
+
+  });
+}
+
+
+
 State["Connecting to Reddit API"]
 var client = new snoowrap(credentials),
     streaming = new snoostorm(client);
@@ -60,12 +91,10 @@ comments.on("comment", function(comment) {
     console.log(`Illegal Comment by ${comment.author.name.green} (${illegalSections.length} illegal sections)`);
     marked.write(`${comment.id},comment\n`);
 
-    let response = [
-      "Hi! Your annotation contains a fifth glyph",
-      "",
-      "Violations:",
-      
-    ].join("\n");
+    createResponse(illegalSections)
+      .then(function(response) {
+
+      })
 
 
 

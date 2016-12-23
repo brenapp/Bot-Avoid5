@@ -24,7 +24,6 @@
   "dependencies": {
     "colors": "^1.1.2",
     "snoostorm": "^0.0.3",
-    "snoowrap": "^1.11.3",
-    "wordpos": "^1.1.0"
+    "snoowrap": "^1.11.3"
   }
 }
