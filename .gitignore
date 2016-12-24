@@ -1,3 +1,4 @@
 data/credentials.json
 node_modules
 debug.md
+.DS_Store

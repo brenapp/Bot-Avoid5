@@ -1,14 +1,16 @@
 var State       = require("./lib/state"),
-    credentials = require("./credentials"),
+    credentials = require("./data/credentials"),
     snoowrap    = require("snoowrap"),
     snoostorm   = require("snoostorm"),
     colors      = require("colors"),
     fs          = require("fs"),
-    wordpos     = new (require("wordpos"));
+    url         = require("url")
+    wordpos     = new (require("wordpos")),
+    cache       = require("./data/cache"),
+    marked      = require("./data/marked")
 
 
-let marked = fs.createWriteStream("marked.csv", {flags: "a"});
-
+let debug  = fs.createWriteStream("debug.md", {flags: "a"});
 
 /**
  * stripToRelevant - strip a reddit content peice to its relevant content, i.e. remove URLS and Users Mentions
@@ -32,10 +34,10 @@ function stripToRelevant(text) {
  * @return {array}       The array of illegal sections
  */
 function findIllegalSections(text) {
-  let sections = text.split(/[,.();:!?\n"']/g);
+  let sections = text.split(/[,.();:!?\n"]/g);
 
   return sections.filter(
-    a => a.toLowerCase().indexOf("e") > -1
+    a => a.indexOf("e") > -1 || a.indexOf("E") > -1
   );
 }
 
@@ -45,27 +47,96 @@ function findIllegalSections(text) {
  * @param  {string[]} illegalSections An Array of Strings Containing the illegal sections
  * @return {Promise}                  A Promise which resolves with the response in a string
  */
-function createResponse(illegalSections) {
+function createResponse(illegalSections, post) {
+  /**  HELPER FUNCTIONS  **/
+  /**
+   * convertToList - Convert an Array to a String list, with or on the final item
+   * @param  {String[]} strings The Array (of strings) to pass
+   * @return {String}           The String List
+   */
+  function convertToList(strings) {
 
-  // Problem: we have an array of illegal sections, with an unknown number of illegal words, and we need to lookup synonyms for each one of these words
-  // Solution: Turn each illegal section into an array of promises that look up the illegal words and put it into one giant Promise.all
-  // When this resolves, it wil look something like this:
-  //   [
-  //     [{definition}, {definition}, {definition}] // <= Illegal Section #0
-  //     [{definition}, {definition}] // <= Illegal Section #1
-  //     [{definition}, {definition}, {definition}, {definition}, {definition}] // <= Illegal Section #2
-  //     [{definition}, {definition}, {definition}, {definition}, {definition}, {definition}] // <= Illegal Section #3
-  //   ]
+    if(strings.length < 2) return strings[0] || ""
+
+    strings[strings.length - 1] = "or " + strings[strings.length - 1]
+    return strings.reduce(
+      (a, b) => `${a}, ${b}`
+    )
+
+  }
+  /**
+   * format - Format a string according to reddit's simplified markdown
+   * @param  {String} input   The string to format
+   * @param  {Object} options The options object to specify formatting, see below
+   * @return {String}         The Formatted String
+   *
+   * options = {
+   *   bold: false,
+   *   italics: false
+   * }
+   */
+  function format(input, options) {
+    return
+      options.italics ? "*"  : "" +
+      options.bold    ? "**" : "" +
+      input                       +
+      options.italics ? "*"  : "" +
+      options.bold    ? "**" : "";
+  }
+
+
+
   return Promise.all(
-    illegalSections.map(section =>
-      Promise.all(
-        // Note: Here I'm assuming that words are split by spaces; it would be better for me to tokenize this, then look it up, but this will do a good enough job
-        section.split(" ").filter(word => word.indexOf("e") > -1).map(word => wordpos.lookup(word))
-      )
+    illegalSections.map(
+      section =>
+        Promise.all(
+          section.split(" ").filter(word => word.indexOf("e") > -1).map(word => wordpos.lookup(word))
+        )
     )
   ).then(function(response) {
+                //      [illegal section][word][definition]
+      let synonyms = response.map(
+        section =>
+          section.map(
+            word =>
+              word.map(
+                definition =>
+                  definition
+                    .filter(synonym => synonym.indexOf("e") === -1 && synonym.indexOf("E") === -1) // <== We only care about fifthless synonyms
+                    .map(synonym => synonym.replace(/_/g, " "))     // <== The WordnetDB uses underscores instead of spaces
+              ).reduce((a,b) => a.concat(b))
+          )
+      );
 
-  });
+
+      // Why do I choose to array join over template strings? Because template strings don't take in account for indentation, making them actually the worse solution for multiline strings, and the fact I can do things like the spread operator
+      // .map(
+      //  (section, index) =>
+      //    (wordCount = 0, " > " + section.replace(/\b\w*e\w*\b/ig, word => format(word, {italics: true}) + synonyms[index][wordCount++].length > 0 ? ` (try ${convertToList(synonyms[index][wordCount].map(word=>format(word, {bold: true})))})` : "") + "\n")
+      //)
+      let body = [
+        `Hi /u/${post.author.name}! Your post contains that fifth glyph`,
+        "",
+        "Infractions:",
+        ...illegalSections.map(
+          (section, index) =>
+            " > " + (wordCount = 0,
+                     section.replace(
+                       /\b\w*e\w*\b/ig,
+                       word =>
+                        `*${word.replace(/e/ig, "-")}*` +
+                        ` (try ${convertToList(synonyms[index][wordCount++].map(word=>"**"+word+"**"))})`
+                     ) + "\n")
+        ),
+        "---",
+        "[instructions](https://github.com/MayorMonty/Bot-Avoid5) | [Anything Wrong?](https://www.reddit.com/message/compose?to=MayorMonty&subject=On%20AvoidBot%20&message=(Drop%2520a%2520link%2520to%2520your%2520situation%2C%20si%20vous%20pla%C3%AEt)) | [Author: MayorMonty](/u/MayorMonty)"
+      ].join("\n")
+      return body
+
+  })
+
+
+
 }
 
 
@@ -82,19 +153,20 @@ var client = new snoowrap(credentials),
     });
 State["Connecting to Reddit API"].done();
 
+let incrementor = 0
 // TODO: Convert this library to a streaming one, these events look bad
 comments.on("comment", function(comment) {
   let illegalSections = findIllegalSections(stripToRelevant(comment.body));
 
-
+  if (incrementor++ > 20) comments.emit("stop")
   if (illegalSections.length > 0) {
-    console.log(`Illegal Comment by ${comment.author.name.green} (${illegalSections.length} illegal sections)`);
-    marked.write(`${comment.id},comment\n`);
+    console.log(`Illegal Comment by ${comment.author.name.green} (${illegalSections.length.toString().bold} illegal sections) – ${comment.id.yellow}`);
+    marked.comments.push(comment.id)
 
-    createResponse(illegalSections)
+    createResponse(illegalSections, comment)
       .then(function(response) {
-
-      })
+        debug.write(response + "\n");
+      }).catch(e => {throw e})
 
 
 
@@ -103,7 +175,16 @@ comments.on("comment", function(comment) {
 })
 
 submissions.on("submission", function(submission) {
-  let body = submission.title + submission.selftext;
+  let body = submission.title + submission.selftext,
+      illegalSections = findIllegalSections(stripToRelevant(body));
 
+  if (illegalSections.length > 0) {
+    console.log(`Illegal Submission by ${submission.author.name.green} (${illegalSections.length.toString().bold} illegal sections) – ${submission.id.yellow}`);
+    marked.submission.push(submission.id)
+    createResponse(illegalSections, submission)
+      .then(function(response) {
+        debug.write(response + "\n");
+      }).catch(e => {throw e})
+  }
 
 })
